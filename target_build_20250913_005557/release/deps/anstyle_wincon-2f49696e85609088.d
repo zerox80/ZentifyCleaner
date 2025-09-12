@@ -1,0 +1,10 @@
+C:\Users\rujbin-LOCAL\Documents\ZentifyCleaner\target_build_20250913_005557\release\deps\anstyle_wincon-2f49696e85609088.d: C:\Users\rujbin-LOCAL\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anstyle-wincon-3.0.10\src\lib.rs C:\Users\rujbin-LOCAL\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anstyle-wincon-3.0.10\src\ansi.rs C:\Users\rujbin-LOCAL\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anstyle-wincon-3.0.10\src\stream.rs C:\Users\rujbin-LOCAL\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anstyle-wincon-3.0.10\src\windows.rs
+
+C:\Users\rujbin-LOCAL\Documents\ZentifyCleaner\target_build_20250913_005557\release\deps\libanstyle_wincon-2f49696e85609088.rlib: C:\Users\rujbin-LOCAL\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anstyle-wincon-3.0.10\src\lib.rs C:\Users\rujbin-LOCAL\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anstyle-wincon-3.0.10\src\ansi.rs C:\Users\rujbin-LOCAL\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anstyle-wincon-3.0.10\src\stream.rs C:\Users\rujbin-LOCAL\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anstyle-wincon-3.0.10\src\windows.rs
+
+C:\Users\rujbin-LOCAL\Documents\ZentifyCleaner\target_build_20250913_005557\release\deps\libanstyle_wincon-2f49696e85609088.rmeta: C:\Users\rujbin-LOCAL\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anstyle-wincon-3.0.10\src\lib.rs C:\Users\rujbin-LOCAL\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anstyle-wincon-3.0.10\src\ansi.rs C:\Users\rujbin-LOCAL\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anstyle-wincon-3.0.10\src\stream.rs C:\Users\rujbin-LOCAL\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anstyle-wincon-3.0.10\src\windows.rs
+
+C:\Users\rujbin-LOCAL\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anstyle-wincon-3.0.10\src\lib.rs:
+C:\Users\rujbin-LOCAL\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anstyle-wincon-3.0.10\src\ansi.rs:
+C:\Users\rujbin-LOCAL\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anstyle-wincon-3.0.10\src\stream.rs:
+C:\Users\rujbin-LOCAL\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anstyle-wincon-3.0.10\src\windows.rs:

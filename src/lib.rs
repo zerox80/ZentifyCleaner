@@ -14,6 +14,8 @@ use std::os::windows::fs::MetadataExt;
 use std::os::windows::ffi::OsStrExt;
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_DELAY_UNTIL_REBOOT};
+#[cfg(windows)]
+use windows_sys::Win32::Security::{CheckTokenMembership, CreateWellKnownSid, SECURITY_MAX_SID_SIZE, WinBuiltinAdministratorsSid};
 
 // Public API types
 #[derive(Debug, Clone, Deserialize)]
@@ -770,10 +772,38 @@ pub fn format_bytes(bytes: u64) -> String {
 }
 
 // helpers for serde defaults
+pub fn env_truthy(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) => {
+            let v = v.trim();
+            matches!(v, "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
+        }
+        Err(_) => false,
+    }
+}
 fn true_bool() -> bool { true }
 fn false_bool() -> bool { false }
 
 // ---------------- Windows-specific helpers ----------------
+#[cfg(windows)]
+pub fn is_elevated() -> bool {
+    unsafe {
+        // Build the SID for the built-in Administrators group and check membership
+        let mut sid = [0u8; SECURITY_MAX_SID_SIZE as usize];
+        let mut sid_size: u32 = SECURITY_MAX_SID_SIZE as u32;
+        let sid_ptr = sid.as_mut_ptr() as *mut core::ffi::c_void;
+        if CreateWellKnownSid(WinBuiltinAdministratorsSid, std::ptr::null_mut(), sid_ptr, &mut sid_size) == 0 {
+            return false;
+        }
+        let mut is_member: i32 = 0;
+        if CheckTokenMembership(std::ptr::null_mut(), sid_ptr as _, &mut is_member) == 0 {
+            return false;
+        }
+        is_member != 0
+    }
+}
+#[cfg(not(windows))]
+pub fn is_elevated() -> bool { false }
 #[cfg(windows)]
 fn stop_explorer(cfg: &Config) -> bool {
     // Attempt a graceful stop of Explorer to release locks on caches

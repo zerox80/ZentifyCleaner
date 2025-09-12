@@ -12,11 +12,11 @@ use serde::{Deserialize, Serialize};
 use tokio::{net::TcpListener, time::timeout};
 use std::time::Duration;
 use rand::{rngs::OsRng, RngCore};
-use zentify_cleaner::{Config, load_config, run_clean, RunOverrides, format_bytes};
+use zentify_cleaner::{Config, load_config, run_clean, RunOverrides, format_bytes, env_truthy, is_elevated};
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
 #[cfg(windows)]
-use windows_sys::Win32::Security::{CheckTokenMembership, CreateWellKnownSid, SECURITY_MAX_SID_SIZE, WinBuiltinAdministratorsSid};
+// No Security import needed here; use is_elevated() from library
 #[cfg(windows)]
 // Call ShellExecuteW via fully-qualified path at call site
 
@@ -67,24 +67,6 @@ struct Health {
     target: &'static str,
 }
 
-// ---------- Elevation (Windows) ----------
-#[cfg(windows)]
-fn is_elevated() -> bool {
-    unsafe {
-        let mut sid = [0u8; SECURITY_MAX_SID_SIZE as usize];
-        let mut sid_size: u32 = SECURITY_MAX_SID_SIZE as u32;
-        let sid_ptr = sid.as_mut_ptr() as *mut core::ffi::c_void;
-        if CreateWellKnownSid(WinBuiltinAdministratorsSid, std::ptr::null_mut(), sid_ptr, &mut sid_size) == 0 {
-            return false;
-        }
-        let mut is_member: i32 = 0;
-        if CheckTokenMembership(std::ptr::null_mut(), sid_ptr as _, &mut is_member) == 0 {
-            return false;
-        }
-        is_member != 0
-    }
-}
-
 #[cfg(windows)]
 fn wide_null(s: &std::ffi::OsStr) -> Vec<u16> {
     let mut v: Vec<u16> = s.encode_wide().collect();
@@ -110,15 +92,6 @@ fn relaunch_as_admin() -> Result<(), String> {
 }
 
 // ---------- Helpers ----------
-fn env_truthy(name: &str) -> bool {
-    match std::env::var(name) {
-        Ok(v) => {
-            let v = v.trim();
-            matches!(v, "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
-        }
-        Err(_) => false,
-    }
-}
 
 fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";

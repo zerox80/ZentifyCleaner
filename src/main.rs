@@ -3,19 +3,22 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::io::{self, Write};
-use serde::Deserialize;
 use clap::Parser;
+use serde::Deserialize;
 use log::{debug, info};
-use zentify_cleaner::{load_config as core_load_config, run_clean as core_run_clean, RunOverrides as CoreRunOverrides};
+use zentify_cleaner::{
+    load_config as core_load_config,
+    run_clean as core_run_clean,
+    RunOverrides as CoreRunOverrides,
+    env_truthy,
+    is_elevated,
+    format_bytes,
+};
 
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
 #[cfg(windows)]
 use windows_sys::Win32::System::Console::{GetConsoleWindow, GetConsoleProcessList};
-#[cfg(windows)]
-use windows_sys::Win32::Security::{
-    CheckTokenMembership, CreateWellKnownSid, SECURITY_MAX_SID_SIZE, WinBuiltinAdministratorsSid,
-};
 
 #[cfg(windows)]
 fn main() {
@@ -616,16 +619,6 @@ fn load_config() -> Config {
     Config::default()
 }
 
-fn env_truthy(name: &str) -> bool {
-    match std::env::var(name) {
-        Ok(v) => {
-            let v = v.trim();
-            matches!(v, "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
-        }
-        Err(_) => false,
-    }
-}
-
 fn true_bool() -> bool { true }
 fn false_bool() -> bool { false }
 
@@ -679,39 +672,9 @@ fn compute_dir_stats(root: &Path) -> (u64, u64, u64) {
     (bytes, files, dirs)
 }
 
-fn format_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut size = bytes as f64;
-    let mut unit = 0;
-    while size >= 1024.0 && unit < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 { format!("{} {}", bytes, UNITS[unit]) } else { format!("{:.2} {}", size, UNITS[unit]) }
-}
 
 // ---------- Elevation (Windows) ----------
 
-#[cfg(windows)]
-fn is_elevated() -> bool {
-    unsafe {
-        // Build the SID for the built-in Administrators group and check membership
-        let mut sid = [0u8; SECURITY_MAX_SID_SIZE as usize];
-        let mut sid_size: u32 = SECURITY_MAX_SID_SIZE as u32;
-        let sid_ptr = sid.as_mut_ptr() as *mut core::ffi::c_void;
-        if CreateWellKnownSid(WinBuiltinAdministratorsSid, std::ptr::null_mut(), sid_ptr, &mut sid_size) == 0 {
-            return false;
-        }
-        let mut is_member: i32 = 0;
-        if CheckTokenMembership(std::ptr::null_mut(), sid_ptr as _, &mut is_member) == 0 {
-            return false;
-        }
-        is_member != 0
-    }
-}
-
-#[cfg(not(windows))]
-fn is_elevated() -> bool { false }
 
 // ---------- Console pause logic (Windows) ----------
 
