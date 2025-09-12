@@ -1,0 +1,64 @@
+[package]
+name = "zentify-cleaner"
+version = "2.0.0"
+edition = "2021"
+authors = ["Zentify Team"]
+description = "Minimal, fast Windows temp cleaner (CLI + optional local web UI)"
+license = "MIT"
+repository = "https://github.com/zentify/zentify-cleaner"
+keywords = ["windows", "cleaner", "optimizer", "cli", "system", "async", "performance"]
+categories = ["command-line-utilities", "filesystem"]
+readme = "README.md"
+homepage = "https://github.com/zentify/zentify-cleaner"
+documentation = "https://docs.rs/zentify-cleaner"
+rust-version = "1.70"
+build = "build.rs"
+
+[[bin]]
+name = "zentify-cleaner"
+path = "src/main.rs"
+
+[[bin]]
+name = "zentify-web"
+path = "src/bin/zentify-web.rs"
+required-features = ["web"]
+
+[features]
+default = []
+# Build the optional local Web UI (Axum/Tokio)
+web = ["dep:axum", "dep:tokio", "dep:rand"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+log = "0.4"
+env_logger = "0.11"
+axum = { version = "0.7", default-features = true, optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal", "fs", "io-util", "sync", "net"], optional = true }
+rand = { version = "0.8", optional = true }
+[dev-dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_Threading",
+  "Win32_Storage_FileSystem",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_System_Console"
+] }
+
