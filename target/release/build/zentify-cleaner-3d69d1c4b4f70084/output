@@ -1,0 +1,6 @@
+cargo:rerun-if-changed=.git/HEAD
+cargo:rerun-if-changed=.git/refs
+cargo:rustc-env=GIT_COMMIT=2d1262426600
+cargo:rustc-env=GIT_DESCRIBE=2d12624-dirty
+cargo:rustc-env=BUILD_UNIX_TIME=1757777934
+cargo:rustc-env=BUILD_TARGET=x86_64-pc-windows-msvc

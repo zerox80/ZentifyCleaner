@@ -273,8 +273,16 @@ $env:ZENTIFY_WEB_ALLOW_PATH_FALLBACK = '1'   # Allow fallback to PATH for zentif
 Endpoints:
 
 - `/` – Web UI
-- `/api/health` – Health check
-- `/api/run` (POST, JSON) – starts the cleaner with flags/env (requires `X-CSRF-Token` header, see below)
+- `/api/health` (GET) – Health check
+- `/api/version` (GET) – Build/version metadata (commit, describe, build time, target)
+- `/api/permissions` (GET) – Shows whether the process is elevated and if system-clean is allowed by default
+- `/api/csrf` (GET) – Issue CSRF token for mutating requests
+- `/api/config` (GET/PUT/DELETE) – Load current config and set/clear an in-memory override used for runs
+- `/api/preview` (POST) – Returns preview of candidate target directories/files based on flags
+- `/api/history` (GET) – Recent run history (latest-first, capped)
+- `/api/run` (POST, JSON) – Start cleaner synchronously (requires `X-CSRF-Token`)
+- `/api/run-async` (POST, JSON) – Start cleaner asynchronously and return a Job ID (requires `X-CSRF-Token`)
+- `/api/job/:id` (GET/DELETE) – Query or delete async job entry (DELETE requires `X-CSRF-Token`)
 
 Example request to `/api/run`:
 
@@ -295,6 +303,30 @@ Web UI security measures:
 - CSRF protection: Before any POST to `/api/run`, a valid CSRF token must be sent in the `X-CSRF-Token` header. Obtain the token from `/api/csrf`.
 - Loopback enforcement: Binding to non-loopback addresses is refused unless `ZENTIFY_WEB_ALLOW_NON_LOCAL=1` is set.
 - CLI path resolution: By default, PATH is NOT used. The web frontend uses either an explicitly set path (`ZENTIFY_CLEANER_PATH`) or a binary located next to `zentify-web`. Fallback to PATH is only possible with `ZENTIFY_WEB_ALLOW_PATH_FALLBACK=1`.
+
+Additional examples (PowerShell):
+
+```powershell
+# Get CSRF token
+$csrf = (Invoke-RestMethod http://127.0.0.1:7878/api/csrf).token
+
+# Preview targets (no CSRF required)
+Invoke-RestMethod -Method POST -ContentType 'application/json' -Body '{"dry_run":true,"verbose":false,"quiet":false,"exact_stats":false,"allow_system_clean":false,"prefetch":false}' http://127.0.0.1:7878/api/preview | ConvertTo-Json -Depth 4
+
+# Run synchronously
+Invoke-RestMethod -Method POST -ContentType 'application/json' -Headers @{ 'X-CSRF-Token' = $csrf } -Body '{"dry_run":true,"verbose":true,"quiet":false,"exact_stats":false,"allow_system_clean":false,"prefetch":false}' http://127.0.0.1:7878/api/run | ConvertTo-Json -Depth 4
+
+# Async run -> job id
+$job = Invoke-RestMethod -Method POST -ContentType 'application/json' -Headers @{ 'X-CSRF-Token' = $csrf } -Body '{"dry_run":true,"verbose":false,"quiet":false,"exact_stats":false,"allow_system_clean":false,"prefetch":false}' http://127.0.0.1:7878/api/run-async
+
+# Poll job status
+Invoke-RestMethod http://127.0.0.1:7878/api/job/$($job.id) | ConvertTo-Json -Depth 4
+
+# Read/override/clear in-memory config
+Invoke-RestMethod http://127.0.0.1:7878/api/config | ConvertTo-Json -Depth 4
+Invoke-RestMethod -Method PUT -ContentType 'application/json' -Headers @{ 'X-CSRF-Token' = $csrf } -Body '{"dry_run":true}' http://127.0.0.1:7878/api/config | ConvertTo-Json -Depth 4
+Invoke-RestMethod -Method DELETE -Headers @{ 'X-CSRF-Token' = $csrf } http://127.0.0.1:7878/api/config -MaximumRedirection 0 -ErrorAction SilentlyContinue
+```
 
 Security note: The Web UI is intended for local use and by default binds only to `127.0.0.1`. Do not expose the UI to the network/Internet.
 

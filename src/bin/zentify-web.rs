@@ -1,7 +1,9 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::collections::HashMap;
 
 use axum::{
-    extract::State,
+    extract::{State, Path},
     http::{StatusCode, HeaderMap},
     response::Html,
     routing::{get, post},
@@ -9,10 +11,10 @@ use axum::{
 };
 use axum::extract::DefaultBodyLimit;
 use serde::{Deserialize, Serialize};
-use tokio::{net::TcpListener, time::timeout};
-use std::time::Duration;
+use tokio::{net::TcpListener, time::timeout, sync::Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rand::{rngs::OsRng, RngCore};
-use zentify_cleaner::{Config, load_config, run_clean, RunOverrides, format_bytes, env_truthy, is_elevated};
+use zentify_cleaner::{Config, load_config, run_clean, RunOverrides, format_bytes, env_truthy, is_elevated, preview_targets, TargetsPreview};
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
 #[cfg(windows)]
@@ -23,9 +25,16 @@ use std::os::windows::ffi::OsStrExt;
 #[derive(Clone)]
 struct AppState {
     csrf_token: String,
+    inner: Arc<InnerState>,
 }
 
-#[derive(Debug, Deserialize)]
+struct InnerState {
+    history: Mutex<Vec<RunRecord>>,                // latest-first
+    config_override: Mutex<Option<Config>>,        // in-memory override, if any
+    jobs: Mutex<HashMap<String, JobStatusData>>,   // async run jobs
+}
+
+#[derive(Debug, Deserialize, Clone)]
 struct RunRequest {
     dry_run: bool,
     verbose: bool,
@@ -36,7 +45,7 @@ struct RunRequest {
     max_parallelism: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct RunResponse {
     ok: bool,
     exit_code: i32,
@@ -65,6 +74,49 @@ struct Health {
     describe: &'static str,
     build_unix_time: &'static str,
     target: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct VersionInfo {
+    version: &'static str,
+    commit: &'static str,
+    describe: &'static str,
+    build_unix_time: &'static str,
+    target: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct PermissionsInfo {
+    elevated: bool,
+    default_allow_system_clean: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct RunRecord {
+    id: Option<String>,
+    started_at: u64,
+    finished_at: u64,
+    response: RunResponse,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct JobStatusData {
+    id: String,
+    status: String, // running|completed|failed|timeout
+    started_at: u64,
+    finished_at: Option<u64>,
+    result: Option<RunResponse>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct JobIdResponse { id: String }
+
+#[derive(Debug, Serialize)]
+struct ConfigInfo {
+    loaded: Config,
+    effective_categories: zentify_cleaner::Categories,
+    override_applied: Option<Config>,
 }
 
 #[cfg(windows)]
@@ -142,13 +194,27 @@ async fn main() {
 
     // Security: per-process CSRF token that must be sent with state-changing requests
     let csrf_token = generate_csrf_token();
-    let state = AppState { csrf_token };
+    let state = AppState {
+        csrf_token,
+        inner: Arc::new(InnerState {
+            history: Mutex::new(Vec::new()),
+            config_override: Mutex::new(None),
+            jobs: Mutex::new(HashMap::new()),
+        })
+    };
 
     let app = Router::new()
         .route("/", get(ui))
         .route("/api/health", get(health))
+        .route("/api/version", get(version))
+        .route("/api/permissions", get(permissions))
         .route("/api/csrf", get(csrf))
+        .route("/api/config", get(get_config).put(put_config).delete(delete_config))
+        .route("/api/preview", post(preview_targets_handler))
+        .route("/api/history", get(history))
         .route("/api/run", post(run_cleaner))
+        .route("/api/run-async", post(run_cleaner_async))
+        .route("/api/job/:id", get(job_status).delete(delete_job))
         .layer(DefaultBodyLimit::max(32 * 1024))
         .with_state(state);
 
@@ -184,6 +250,22 @@ async fn health() -> Json<Health> {
     })
 }
 
+async fn version() -> Json<VersionInfo> {
+    Json(VersionInfo {
+        version: env!("CARGO_PKG_VERSION"),
+        commit: option_env!("GIT_COMMIT").unwrap_or("unknown"),
+        describe: option_env!("GIT_DESCRIBE").unwrap_or("unknown"),
+        build_unix_time: option_env!("BUILD_UNIX_TIME").unwrap_or("0"),
+        target: option_env!("BUILD_TARGET").unwrap_or("unknown"),
+    })
+}
+
+async fn permissions() -> Json<PermissionsInfo> {
+    let elevated = is_elevated();
+    let default_allow = elevated || env_truthy("ZENTIFY_ALLOW_SYSTEM_CLEAN");
+    Json(PermissionsInfo { elevated, default_allow_system_clean: default_allow })
+}
+
 async fn csrf(State(state): State<AppState>) -> Json<CsrfResponse> {
     Json(CsrfResponse { token: state.csrf_token.clone() })
 }
@@ -196,15 +278,22 @@ fn internal_error<E: std::fmt::Display>(err: E) -> (StatusCode, String) {
     )
 }
 
-async fn run_cleaner(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<RunRequest>) -> Result<Json<RunResponse>, (StatusCode, String)> {
-    // CSRF validation: require the exact per-process token
+fn now_unix() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+fn csrf_check(headers: &HeaderMap, state: &AppState) -> Result<(), (StatusCode, String)> {
     let hdr = headers.get("x-csrf-token").and_then(|v| v.to_str().ok());
     if hdr != Some(state.csrf_token.as_str()) {
         return Err((StatusCode::FORBIDDEN, "missing or invalid CSRF token".into()));
     }
+    Ok(())
+}
 
-    // Build config from stored config and request flags
-    let mut cfg: Config = load_config();
+async fn build_cfg_and_overrides(state: &AppState, req: &RunRequest) -> (Config, RunOverrides) {
+    let base_cfg = load_config();
+    let override_opt = { state.inner.config_override.lock().await.clone() };
+    let mut cfg: Config = override_opt.unwrap_or(base_cfg);
     if req.dry_run { cfg.dry_run = true; }
     if req.verbose { cfg.verbose = true; cfg.quiet = false; }
     if req.quiet { cfg.quiet = true; cfg.verbose = false; }
@@ -215,17 +304,32 @@ async fn run_cleaner(State(state): State<AppState>, headers: HeaderMap, Json(req
         prefetch: Some(req.prefetch),
         max_parallelism: req.max_parallelism.map(|n| n as usize),
     };
+    (cfg, overrides)
+}
+
+async fn push_history(state: &AppState, id: Option<String>, started_at: u64, finished_at: u64, resp: RunResponse) {
+    let mut h = state.inner.history.lock().await;
+    h.insert(0, RunRecord { id, started_at, finished_at, response: resp });
+    const MAX_HIST: usize = 50;
+    if h.len() > MAX_HIST { h.truncate(MAX_HIST); }
+}
+
+async fn run_cleaner(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<RunRequest>) -> Result<Json<RunResponse>, (StatusCode, String)> {
+    // CSRF validation: require the exact per-process token
+    csrf_check(&headers, &state)?;
+
+    // Build config (respect in-memory override) and overrides
+    let (cfg, overrides) = build_cfg_and_overrides(&state, &req).await;
 
     // Run heavy sync cleaning logic on blocking thread
-    let handle = tokio::task::spawn_blocking(move || {
-        run_clean(&cfg, &overrides)
-    });
+    let handle = tokio::task::spawn_blocking(move || { run_clean(&cfg, &overrides) });
 
     let timeout_secs: u64 = std::env::var("ZENTIFY_WEB_RUN_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(600);
 
+    let started_at = now_unix();
     let summary = match timeout(Duration::from_secs(timeout_secs), handle).await {
         Ok(join_res) => join_res.map_err(internal_error)?,
         Err(_) => {
@@ -259,7 +363,10 @@ async fn run_cleaner(State(state): State<AppState>, headers: HeaderMap, Json(req
         }
     }
 
-    Ok(Json(RunResponse { ok: true, exit_code: 0, stdout, stderr: String::new(), files_deleted: summary.files_deleted, dirs_deleted: summary.dirs_deleted, links_removed: summary.links_removed, bytes_freed: summary.bytes_freed, elapsed: summary.elapsed.as_secs_f64(), dry_run: summary.dry_run, exact_stats: summary.exact_stats, cleaned_dirs: summary.cleaned_dirs }))
+    let resp = RunResponse { ok: true, exit_code: 0, stdout, stderr: String::new(), files_deleted: summary.files_deleted, dirs_deleted: summary.dirs_deleted, links_removed: summary.links_removed, bytes_freed: summary.bytes_freed, elapsed: summary.elapsed.as_secs_f64(), dry_run: summary.dry_run, exact_stats: summary.exact_stats, cleaned_dirs: summary.cleaned_dirs };
+    let finished_at = now_unix();
+    push_history(&state, None, started_at, finished_at, resp.clone()).await;
+    Ok(Json(resp))
 }
 
  
@@ -412,3 +519,129 @@ const INDEX_HTML: &str = r#"<!doctype html>
   </script>
 </body>
 </html>"#;
+
+// ---------------- Additional API Handlers ----------------
+
+async fn get_config(State(state): State<AppState>) -> Json<ConfigInfo> {
+    let loaded = load_config();
+    let effective_categories = loaded.effective_categories();
+    let override_applied = state.inner.config_override.lock().await.clone();
+    Json(ConfigInfo { loaded, effective_categories, override_applied })
+}
+
+async fn put_config(State(state): State<AppState>, headers: HeaderMap, Json(cfg): Json<Config>) -> Result<Json<ConfigInfo>, (StatusCode, String)> {
+    csrf_check(&headers, &state)?;
+    {
+        let mut ov = state.inner.config_override.lock().await;
+        *ov = Some(cfg.clone());
+    }
+    Ok(get_config(State(state)).await)
+}
+
+async fn delete_config(State(state): State<AppState>, headers: HeaderMap) -> Result<StatusCode, (StatusCode, String)> {
+    csrf_check(&headers, &state)?;
+    {
+        let mut ov = state.inner.config_override.lock().await;
+        *ov = None;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn preview_targets_handler(State(state): State<AppState>, Json(req): Json<RunRequest>) -> Result<Json<TargetsPreview>, (StatusCode, String)> {
+    // No CSRF required for read-only preview; could be tightened if desired
+    let (cfg, overrides) = build_cfg_and_overrides(&state, &req).await;
+    let preview = preview_targets(&cfg, &overrides);
+    Ok(Json(preview))
+}
+
+async fn history(State(state): State<AppState>) -> Json<Vec<RunRecord>> {
+    let h = state.inner.history.lock().await;
+    Json(h.clone())
+}
+
+async fn run_cleaner_async(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<RunRequest>) -> Result<Json<JobIdResponse>, (StatusCode, String)> {
+    csrf_check(&headers, &state)?;
+    let id = {
+        let mut b = [0u8; 8];
+        OsRng.fill_bytes(&mut b);
+        hex_encode(&b)
+    };
+    let (cfg, overrides) = build_cfg_and_overrides(&state, &req).await;
+    let started_at = now_unix();
+    {
+        let mut jobs = state.inner.jobs.lock().await;
+        jobs.insert(id.clone(), JobStatusData { id: id.clone(), status: "running".into(), started_at, finished_at: None, result: None, error: None });
+    }
+    let state2 = state.clone();
+    let id_for_task = id.clone();
+    tokio::spawn(async move {
+        let handle = tokio::task::spawn_blocking(move || { run_clean(&cfg, &overrides) });
+        let timeout_secs: u64 = std::env::var("ZENTIFY_WEB_RUN_TIMEOUT_SECS").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(600);
+        let finished_at;
+        let mut status = "completed".to_string();
+        let mut error: Option<String> = None;
+        let result: Option<RunResponse>;
+        let started_at_local = started_at;
+        match timeout(Duration::from_secs(timeout_secs), handle).await {
+            Ok(join_res) => match join_res {
+                Ok(summary) => {
+                    let mut stdout = String::new();
+                    if summary.dry_run {
+                        stdout.push_str(&format!(
+                            "Dry-run summary: would remove {} files, {} dirs, {} links; free approx {} ({} bytes) in {:?}.\n",
+                            summary.files_deleted, summary.dirs_deleted, summary.links_removed, format_bytes(summary.bytes_freed), summary.bytes_freed, summary.elapsed
+                        ));
+                    } else {
+                        stdout.push_str(&format!(
+                            "Summary: removed {} files, {} dirs, {} links; freed {} ({} bytes) in {:?}.\n",
+                            summary.files_deleted, summary.dirs_deleted, summary.links_removed, format_bytes(summary.bytes_freed), summary.bytes_freed, summary.elapsed
+                        ));
+                        if !summary.exact_stats { stdout.push_str("Note: Byte counts for directories are approximate (fast mode). Use --exact-stats for precise totals.\n"); }
+                    }
+                    let resp = RunResponse { ok: true, exit_code: 0, stdout, stderr: String::new(), files_deleted: summary.files_deleted, dirs_deleted: summary.dirs_deleted, links_removed: summary.links_removed, bytes_freed: summary.bytes_freed, elapsed: summary.elapsed.as_secs_f64(), dry_run: summary.dry_run, exact_stats: summary.exact_stats, cleaned_dirs: summary.cleaned_dirs };
+                    finished_at = now_unix();
+                    result = Some(resp.clone());
+                    push_history(&state2, Some(id_for_task.clone()), started_at_local, finished_at, resp).await;
+                }
+                Err(e) => {
+                    finished_at = now_unix();
+                    status = "failed".into();
+                    error = Some(format!("internal error: {}", e));
+                    result = None;
+                }
+            },
+            Err(_) => {
+                finished_at = now_unix();
+                status = "timeout".into();
+                error = Some(format!("cleaner timed out after {}s", timeout_secs));
+                result = None;
+            }
+        }
+        let mut jobs = state2.inner.jobs.lock().await;
+        if let Some(entry) = jobs.get_mut(&id_for_task) {
+            entry.status = status;
+            entry.finished_at = Some(finished_at);
+            entry.result = result;
+            entry.error = error;
+        }
+    });
+
+    Ok(Json(JobIdResponse { id }))
+}
+
+async fn job_status(State(state): State<AppState>, Path(id): Path<String>) -> Result<Json<JobStatusData>, (StatusCode, String)> {
+    let jobs = state.inner.jobs.lock().await;
+    if let Some(s) = jobs.get(&id) {
+        return Ok(Json(s.clone()));
+    }
+    Err((StatusCode::NOT_FOUND, "job not found".into()))
+}
+
+async fn delete_job(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Result<StatusCode, (StatusCode, String)> {
+    csrf_check(&headers, &state)?;
+    let mut jobs = state.inner.jobs.lock().await;
+    if jobs.remove(&id).is_some() {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    Err((StatusCode::NOT_FOUND, "job not found".into()))
+}

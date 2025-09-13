@@ -5,7 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use std::process::Command;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
@@ -18,7 +18,7 @@ use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_DELAY_UNTIL_
 use windows_sys::Win32::Security::{CheckTokenMembership, CreateWellKnownSid, SECURITY_MAX_SID_SIZE, WinBuiltinAdministratorsSid};
 
 // Public API types
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Categories {
     #[serde(default = "true_bool")] pub windows_temp: bool,
     #[serde(default = "true_bool")] pub user_temp: bool,
@@ -43,7 +43,36 @@ pub struct Categories {
     #[serde(default = "true_bool")] pub widgets_cache: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+pub fn preview_targets(cfg: &Config, overrides: &RunOverrides) -> TargetsPreview {
+    // Determine effective categories similar to run_clean
+    let mut cats = cfg.effective_categories();
+    if overrides.allow_system {
+        cats.prefetch = true;
+    }
+    if let Some(p) = overrides.prefetch {
+        if p { cats.prefetch = true; }
+    }
+
+    let mut dirs = candidate_dirs(&cats, overrides.allow_system);
+    let mut files = candidate_files(&cats, overrides.allow_system);
+
+    // Apply same filters
+    dirs.retain(|p| p.is_dir());
+    retain_allowed_paths(&mut dirs, overrides.allow_system);
+    dedup_paths(&mut dirs);
+
+    files.retain(|p| p.is_file());
+    retain_allowed_paths(&mut files, overrides.allow_system);
+    files.sort();
+    files.dedup();
+
+    let target_dirs = dirs.into_iter().map(|p| p.to_string_lossy().to_string()).collect();
+    let target_files = files.into_iter().map(|p| p.to_string_lossy().to_string()).collect();
+
+    TargetsPreview { target_dirs, target_files }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)] pub dry_run: bool,
     #[serde(default)] pub verbose: bool,
@@ -184,6 +213,12 @@ pub struct Summary {
     pub dry_run: bool,
     pub exact_stats: bool,
     pub cleaned_dirs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TargetsPreview {
+    pub target_dirs: Vec<String>,
+    pub target_files: Vec<String>,
 }
 
 pub fn run_clean(cfg: &Config, overrides: &RunOverrides) -> Summary {
