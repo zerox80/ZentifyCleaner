@@ -181,10 +181,11 @@ async fn main() {
         .is_test(false)
         .try_init();
 
-    // Auto-elevate on Windows via UAC prompt
+    // Default: do NOT auto-elevate. Opt-in via ZENTIFY_WEB_AUTO_ELEVATE=1.
     #[cfg(windows)]
     {
-        if !is_elevated() {
+        let do_auto = env_truthy("ZENTIFY_WEB_AUTO_ELEVATE");
+        if !is_elevated() && do_auto {
             if let Err(e) = relaunch_as_admin() {
                 eprintln!("zentify-web: failed to relaunch as administrator: {}", e);
             }

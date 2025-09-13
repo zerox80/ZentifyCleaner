@@ -683,6 +683,16 @@ fn fast_clean_dir(dir: &Path, cfg: &Config, stats: &Stats) {
                         stats.add_bytes(size);
                         stats.add_files(1);
                         if verbose { println!("Removed file: {} ({} bytes)", p.display(), size); }
+                    } else {
+                        // On Windows, schedule deletion on next reboot for locked files
+                        #[cfg(windows)]
+                        {
+                            if schedule_delete_on_reboot(&p) {
+                                if verbose { println!("Scheduled for deletion on reboot: {} ({} bytes)", p.display(), size); }
+                                stats.add_bytes(size);
+                                stats.add_files(1);
+                            }
+                        }
                     }
                 }
             }
